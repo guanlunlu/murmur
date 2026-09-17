@@ -11,7 +11,7 @@ const SILENCE_HANGOVER_SECONDS = 0.35;
 const PRE_ROLL_FRAMES = 2;
 const STATE_POLL_MS = 2000;
 
-const ids = ["finalizeButton","uploadButton","fileInput","youtubeForm","youtubeUrl","youtubeSubmit","mediaColumn","videoCard","video","demoAudio","videoBadge","playButton","playIcon","currentTime","duration","timeline","soundButton","restartButton","mediaTitle","mediaMeta","statusPill","statusText","progressText","lineCount","progressBar","transcriptStream","copyButton","toast","runtimeLabel","onlineSummaryToggle","summaryButton","summaryContent","summaryMeta","summaryRuntime","copySummaryButton","contextCount","contextList","captureMode","audioDevice","audioDeviceRow","liveMeter","liveHint"];
+const ids = ["finalizeButton","uploadButton","fileInput","youtubeForm","youtubeUrl","youtubeSubmit","mediaColumn","videoCard","video","demoAudio","videoBadge","playButton","playIcon","currentTime","duration","timeline","soundButton","fastTranscribeButton","restartButton","mediaTitle","mediaMeta","statusPill","statusText","progressText","lineCount","progressBar","transcriptStream","copyButton","toast","runtimeLabel","onlineSummaryToggle","summaryButton","summaryContent","summaryMeta","summaryRuntime","copySummaryButton","contextCount","contextList","captureMode","audioDevice","audioDeviceRow","liveMeter","liveHint"];
 const el = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
 let activeMedia = el.demoAudio;
 let mediaUnavailable = !el.demoAudio.getAttribute("src");
@@ -43,6 +43,7 @@ let liveActive = false;
 let liveStreams = [];
 let liveStartedAt = 0;
 let liveOffset = 0;
+let fastTranscription = null;
 
 class RealtimeCapture {
   constructor() {
@@ -313,6 +314,155 @@ function concatSamples(chunks, length) {
   return output;
 }
 
+// This adapter turns an already-loaded media file into the same PCM contract used by
+// both ASR backends. It deliberately owns no model details: vLLM consumes one
+// stateful stream, while the regular Transformers backend consumes fixed batches.
+class FastTranscriber {
+  async decode(media, signal) {
+    const source = media.currentSrc || media.src;
+    if (!source) throw new Error("找不到目前的音訊來源");
+    const response = await fetch(source, { signal });
+    if (!response.ok) throw new Error("無法讀取這個檔案");
+    const context = new AudioContext();
+    try {
+      return await context.decodeAudioData(await response.arrayBuffer());
+    } finally {
+      await context.close();
+    }
+  }
+
+  toPCM(audio, startSeconds, endSeconds) {
+    const start = Math.floor(startSeconds * audio.sampleRate);
+    const end = Math.min(audio.length, Math.ceil(endSeconds * audio.sampleRate));
+    const mono = new Float32Array(Math.max(0, end - start));
+    for (let channel = 0; channel < audio.numberOfChannels; channel++) {
+      const input = audio.getChannelData(channel);
+      for (let index = start; index < end; index++) mono[index - start] += input[index] / audio.numberOfChannels;
+    }
+    return downsample(mono, audio.sampleRate, TARGET_SAMPLE_RATE);
+  }
+
+  async run(run) {
+    const audio = await this.decode(activeMedia, run.controller.signal);
+    run.totalSeconds = audio.duration;
+    const segmentSeconds = streamingEnabled ? MAX_STREAM_SECONDS : MAX_CHUNK_SECONDS;
+    for (let start = 0; start < audio.duration; start += segmentSeconds) {
+      this.assertActive(run);
+      const end = Math.min(audio.duration, start + segmentSeconds);
+      if (streamingEnabled) await this.runStreamingSegment(run, audio, start, end);
+      else await this.runBatchSegment(run, audio, start, end);
+      run.completedSeconds = end;
+      syncUI();
+    }
+  }
+
+  async runStreamingSegment(run, audio, start, end) {
+    // Do not abort the session-creation request. If Stop lands while the server is
+    // creating a session, we still need its id so the finally block can release it.
+    const streamId = await startStream();
+    run.streamId = streamId;
+    let finished = false;
+    try {
+      this.assertActive(run);
+      let cursor = start;
+      while (cursor + MIN_CHUNK_SECONDS <= end + 0.0001) {
+        this.assertActive(run);
+        const chunkEnd = Math.min(end, cursor + MIN_CHUNK_SECONDS);
+        const pcm = this.toPCM(audio, cursor, chunkEnd);
+        const payload = await streamAudio(streamId, "chunk", pcm, run.controller.signal);
+        this.recordStreamingUpdate(run, payload, cursor, chunkEnd);
+        cursor = chunkEnd;
+      }
+      const tail = cursor < end ? this.toPCM(audio, cursor, end) : new Float32Array();
+      this.assertActive(run);
+      const payload = await streamAudio(streamId, "finish", tail, run.controller.signal);
+      this.recordFinal(run, payload, start, end, "streaming final");
+      finished = true;
+    } finally {
+      if (!finished) abortStream(streamId).catch(() => {});
+      run.streamId = null;
+    }
+  }
+
+  async runBatchSegment(run, audio, start, end) {
+    const pcm = this.toPCM(audio, start, end);
+    const response = await fetch("/api/transcribe", {
+      method: "POST",
+      signal: run.controller.signal,
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Audio-Start": String(start),
+        "X-Audio-End": String(end),
+        "X-Language": "Chinese"
+      },
+      body: pcm,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || payload.error || "辨識失敗");
+    this.assertActive(run);
+    this.recordFinal(run, payload, start, end, `${(end - start).toFixed(1)} 秒 fast batch`);
+  }
+
+  recordStreamingUpdate(run, payload, start, end) {
+    this.assertActive(run);
+    addInferenceEvent({ type: "ASR", context: `${(end - start).toFixed(1)} 秒 fast stream`, detail: "stateful session", latency: payload.inference_seconds });
+    showProvisional(payload.text, start, end);
+    run.completedSeconds = end;
+    syncUI();
+  }
+
+  recordFinal(run, payload, start, end, detail) {
+    this.assertActive(run);
+    addInferenceEvent({ type: "ASR", context: `${(end - start).toFixed(1)} 秒`, detail, latency: payload.inference_seconds });
+    commitFinal(payload.text, start, end, payload.inference_seconds);
+  }
+
+  assertActive(run) {
+    if (run.controller.signal.aborted || fastTranscription !== run || run.generation !== sessionGeneration) throw new DOMException("快速轉錄已停止", "AbortError");
+  }
+}
+
+const fastTranscriber = new FastTranscriber();
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
+
+function cancelFastTranscription({ silent = false } = {}) {
+  const run = fastTranscription;
+  if (!run || run.cancelling) return;
+  run.cancelling = true;
+  run.controller.abort();
+  if (run.streamId) abortStream(run.streamId).catch(() => {});
+  if (!silent) showToast("正在停止快速轉錄");
+  syncUI();
+}
+
+async function toggleFastTranscription() {
+  if (fastTranscription) return cancelFastTranscription();
+  if (captureMode !== "media" || mediaUnavailable) return showToast("請先載入音訊／影片後再使用快速轉錄");
+  if (!(await readyForCapture())) return;
+  activeMedia.pause();
+  capturer.discard();
+  resetTranscript();
+  const run = { controller: new AbortController(), generation: sessionGeneration, streamId: null, totalSeconds: 0, completedSeconds: 0, cancelling: false };
+  fastTranscription = run;
+  syncUI();
+  try {
+    await fastTranscriber.run(run);
+    if (fastTranscription === run) showToast("快速轉錄完成");
+  } catch (error) {
+    if (!isAbortError(error)) {
+      showToast(`快速轉錄失敗：${error.message}`);
+      checkHealth();
+    }
+  } finally {
+    if (fastTranscription === run) fastTranscription = null;
+    run.streamId = null;
+    syncUI();
+  }
+}
+
 async function transcribeChunk(pcm, start, end, generation, { provisional = false, utteranceId = null } = {}) {
   pendingRequests++;
   inferenceRange = { start, end };
@@ -370,16 +520,17 @@ function commitFinal(rawText, start, end, latency) {
   sendSegment({ text, start, end });
 }
 
-async function startStream() {
-  const response = await fetch("/api/streams", { method: "POST", headers: { "X-Language": "Chinese" } });
+async function startStream(signal) {
+  const response = await fetch("/api/streams", { method: "POST", signal, headers: { "X-Language": "Chinese" } });
   const payload = await response.json();
   if (!response.ok || !payload.stream_id) throw new Error(payload.detail || payload.error || "無法建立串流辨識");
   return payload.stream_id;
 }
 
-async function streamAudio(streamId, action, pcm) {
+async function streamAudio(streamId, action, pcm, signal) {
   const response = await fetch(`/api/streams/${streamId}/${action}`, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/octet-stream" },
     body: pcm,
   });
@@ -438,9 +589,10 @@ function formatTime(value) {
 
 function syncUI() {
   const live = captureMode !== "media";
-  const current = captureClock();
+  const current = fastTranscription ? fastTranscription.completedSeconds : captureClock();
   const total = activeMedia.duration || 92.54;
-  const ratio = live || mediaUnavailable ? 0 : Math.min(1, current / total);
+  const fastRatio = fastTranscription?.totalSeconds ? fastTranscription.completedSeconds / fastTranscription.totalSeconds : 0;
+  const ratio = fastTranscription ? fastRatio : live || mediaUnavailable ? 0 : Math.min(1, current / total);
   el.currentTime.textContent = formatTime(current);
   el.duration.textContent = live ? "LIVE" : mediaUnavailable ? "--:--" : formatTime(total);
   el.playButton.disabled = !live && mediaUnavailable;
@@ -451,7 +603,11 @@ function syncUI() {
   el.lineCount.textContent = `${segments.length} 段`;
   el.progressBar.style.width = `${ratio * 100}%`;
   const latest = segments.at(-1);
-  el.progressText.textContent = !live && mediaUnavailable ? "尚未載入媒體" : pendingRequests ? "模型正在辨識" : latest ? `已辨識至 ${formatTime(latest.end)}` : isCapturing() ? "正在收音" : "尚未開始";
+  el.progressText.textContent = fastTranscription
+    ? fastTranscription.cancelling ? "正在停止快速轉錄" : fastTranscription.totalSeconds ? `快速轉錄 ${Math.floor(ratio * 100)}%` : "正在讀取音訊"
+    : !live && mediaUnavailable ? "尚未載入媒體" : pendingRequests ? "模型正在辨識" : latest ? `已辨識至 ${formatTime(latest.end)}` : isCapturing() ? "正在收音" : "尚未開始";
+  el.fastTranscribeButton.disabled = fastTranscription?.cancelling || serverStatus !== "ready" || captureMode !== "media" || mediaUnavailable;
+  el.fastTranscribeButton.textContent = fastTranscription ? fastTranscription.cancelling ? "停止中…" : "■ 停止快速轉錄" : "⚡ 快速轉錄";
   const pending = meetingState ? meetingState.pending_segment_count : 0;
   el.summaryButton.disabled = rolloutPending || summaryStatus !== "ready" || !meetingId || !pending;
   el.summaryButton.textContent = rolloutPending ? "更新中…" : "立即整理";
@@ -466,9 +622,11 @@ function renderCompleted() {
   const stickToBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 48;
   if (!segments.length && !liveHypothesis) {
     renderedHypothesis = null;
-    const placeholder = isCapturing() || pendingRequests ? "listening" : !liveActive && captureMode === "media" && mediaUnavailable ? "no-media" : "idle";
+    const placeholder = fastTranscription ? "fast" : isCapturing() || pendingRequests ? "listening" : !liveActive && captureMode === "media" && mediaUnavailable ? "no-media" : "idle";
     if (stream.children.length !== 1 || stream.firstElementChild?.dataset.placeholder !== placeholder) {
-      stream.innerHTML = placeholder === "listening"
+      stream.innerHTML = placeholder === "fast"
+        ? `<div class="list-placeholder" data-placeholder="fast"><i></i>正在快速轉錄，文字很快會出現在這裡</div>`
+        : placeholder === "listening"
         ? `<div class="list-placeholder" data-placeholder="listening"><i></i>正在收音，暫定文字很快會出現在這裡</div>`
         : placeholder === "no-media"
         ? `<div class="empty-state" data-placeholder="no-media"><div class="empty-glyph">Aa</div><strong>請先載入音訊或影片</strong><p>本專案未附帶示範音檔。請用右上角的「換一個檔案」上傳本機音訊／影片，或貼上 YouTube 連結。</p></div>`
@@ -717,7 +875,7 @@ function updatePlaybackState() {
   if (serverStatus === "loading") el.statusText.textContent = "模型載入中";
   else if (serverStatus === "offline") el.statusText.textContent = "後端未連線";
   else if (serverStatus === "error") el.statusText.textContent = "模型載入失敗";
-  else el.statusText.textContent = playing ? "辨識中" : idleText;
+  else el.statusText.textContent = fastTranscription ? "快速轉錄中" : playing ? "辨識中" : idleText;
   if (!playing) capturer.flush();
   renderCompleted();
   syncUI();
@@ -731,6 +889,7 @@ function bindMedia(media) {
 }
 
 function resetTranscript() {
+  cancelFastTranscription({ silent: true });
   sessionGeneration++;
   segments = [];
   meetingId = null;
@@ -1103,6 +1262,7 @@ function escapeHTML(text) { const node = document.createElement("span"); node.te
 function showToast(message) { el.toast.textContent = message; el.toast.classList.add("show"); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => el.toast.classList.remove("show"), 3000); }
 
 el.playButton.addEventListener("click", togglePlay);
+el.fastTranscribeButton.addEventListener("click", toggleFastTranscription);
 el.timeline.addEventListener("input", () => {
   if (captureMode !== "media") return;
   capturer.discard();

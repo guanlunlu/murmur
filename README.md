@@ -9,6 +9,13 @@ browser-supported video, or YouTube audio) or a **live audio device** — see �
 No demo clip ships with this repository, so the page starts with an empty player: upload
 your own audio/video or paste a YouTube link to begin.
 
+## 快速轉錄
+
+載入音訊或影片後，可按 `⚡ 快速轉錄`，不播放聲音便直接解碼整個檔案並送往本機 ASR。它會顯示目前進度，也可以再次按下按鈕停止。
+
+- `vLLM streaming CUDA`：以 stateful streaming session 處理，每段最多 25 秒。
+- 其他 backend（例如 Transformers CUDA）：沿用既有 `/api/transcribe`，每段最多 10 秒。
+
 Transcript segments then feed a **bounded meeting state** instead of an ever-growing
 rolling summary. Raw ASR is stored verbatim and queued; once the queue crosses a token or
 time threshold, one rollout sends a fixed-size prompt to the local 8B model:
