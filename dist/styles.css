@@ -56,7 +56,7 @@ h1 { font-size: clamp(2.6rem, 4.5vw, 4.8rem); line-height: .99; letter-spacing: 
 .media-meta { min-height: 78px; padding: 15px 22px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .media-meta > div { display: flex; align-items: center; gap: 11px; min-width: 0; }.file-icon { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 9px; background: #f0ede6; color: var(--orange); display: grid; place-items: center; font-size: .65rem; }
 .media-meta strong, .media-meta small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.media-meta strong { font-size: .8rem; }.media-meta small { color: #928d85; font-size: .66rem; margin-top: 4px; }
-.media-meta button { border: 0; background: none; color: #78736c; white-space: nowrap; font-size: .72rem; }
+.media-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }.media-meta button { border: 0; background: none; color: #78736c; white-space: nowrap; font-size: .72rem; }.media-actions #fastTranscribeButton { color: #b85a42; font-weight: 600; }.media-actions #fastTranscribeButton:disabled { color: #aaa59d; cursor: not-allowed; }
 .transcript-panel { display: flex; flex-direction: column; height: 100%; min-height: 540px; }
 .panel-heading { padding: 24px 24px 17px; display: flex; justify-content: space-between; align-items: flex-start; }
 .panel-heading .eyebrow { margin-bottom: 8px; }.panel-heading h2 { margin: 0; font-size: 1.45rem; letter-spacing: -.035em; }
@@ -108,7 +108,7 @@ h1 { font-size: clamp(2.6rem, 4.5vw, 4.8rem); line-height: .99; letter-spacing: 
   .topbar { height: 64px; }.ghost-button { padding: 8px 11px; }.ghost-button span { display: none; }
   main { padding: 32px 14px; }.intro { margin-bottom: 28px; }.intro-copy { font-size: .86rem; }.workspace { gap: 14px; }
   .video-card { margin: 8px 8px 0; }
-  .player-controls { padding: 0 13px; gap: 8px; }.sound-button { display: none; }.media-meta { padding: 13px 16px; }.media-meta button { font-size: .7rem; }
+  .player-controls { padding: 0 13px; gap: 8px; }.sound-button { display: none; }.media-meta { padding: 13px 16px; }.media-actions { gap: 8px; }.media-meta button { font-size: .7rem; }
   .panel-heading, .progress-row, .panel-footer { padding-left: 18px; padding-right: 18px; }.progress-track { margin-left: 18px; margin-right: 18px; }.transcript-stream { padding-left: 18px; padding-right: 18px; }
   .topbar-actions { gap: 6px; }.youtube-form input { width: 92px; padding: 8px 10px; }.youtube-form button { padding: 8px 10px; }
   .summary-heading, .summary-content, .summary-footer { padding-left: 18px; padding-right: 18px; }
