@@ -12,6 +12,7 @@ Generated index. Session files are the source of truth.
 
 ## Completed
 
+- [Refactor local deployment profiles and documentation](sessions/2026/09/20260927T075534Z-refactor-local-deployment-profiles-and-documentation.md) — 2026-09-27T07:55:34Z — cuda, deployment, docs, mlx, summary
 - [Merge bounded meeting state branch into main](sessions/2026/09/20260915T154307Z-merge-bounded-meeting-state-branch-into-main.md) — 2026-09-15T15:43:07Z — branch, meeting-state, merge, refactor
 - [Split the backend server into focused modules](sessions/2026/09/20260915T153330Z-split-the-backend-server-into-focused-modules.md) — 2026-09-15T15:33:30Z — architecture, backend, refactor, tests
 - [Add online summary control and inference context diagnostics](sessions/2026/09/20260915T143528Z-add-online-summary-control-and-inference-context-diagnostics.md) — 2026-09-15T14:35:28Z — api, debug, frontend, summary

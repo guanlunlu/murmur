@@ -2,6 +2,35 @@
   "version": 1,
   "entries": [
     {
+      "id": "20260927T075534Z-refactor-local-deployment-profiles-and-documentation",
+      "created_at": "2026-09-27T07:55:34Z",
+      "title": "Refactor local deployment profiles and documentation",
+      "status": "completed",
+      "tags": [
+        "cuda",
+        "deployment",
+        "docs",
+        "mlx",
+        "summary"
+      ],
+      "files": [
+        "README.md",
+        "backend/deployment.py",
+        "backend/llm.py",
+        "backend/server.py",
+        "docs/deployment/mac.md",
+        "docs/deployment/nvidia.md",
+        "docs/development.md",
+        "docs/features/audio.md",
+        "docs/features/meeting-summary.md",
+        "docs/reference/http-api.md",
+        "tests/test_deployment.py"
+      ],
+      "branch": "main",
+      "commit": "f6c1fbb",
+      "path": "sessions/2026/09/20260927T075534Z-refactor-local-deployment-profiles-and-documentation.md"
+    },
+    {
       "id": "20260916T162431Z-confirm-the-cuda-asr-backends-on-ubuntu-nvidia",
       "created_at": "2026-09-16T16:24:31Z",
       "title": "Confirm the CUDA ASR backends on Ubuntu + NVIDIA",

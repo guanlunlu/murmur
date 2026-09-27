@@ -16,6 +16,7 @@ __pycache__/
 *.pyc
 .venv-windows-asr/
 .venv-qwen-asr/
+.venv/
 asr-server.stdout.log
 asr-server.stderr.log
 .python-version

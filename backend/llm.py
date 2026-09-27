@@ -52,6 +52,52 @@ class MLXChatLLM:
             return None
 
 
+class TransformersChatLLM:
+    """Local CUDA chat model for meeting updates and final minutes."""
+
+    def __init__(self, model_name: str):
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is required for the transformers summary backend")
+        self.name = f"{model_name} · Transformers CUDA"
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="cuda:0",
+        )
+        self._torch = torch
+        self._lock = threading.Lock()
+
+    def chat(self, messages: list[dict[str, str]], max_tokens: int) -> str:
+        input_ids = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            return_tensors="pt",
+            add_generation_prompt=True,
+            enable_thinking=False,
+        ).to(self.model.device)
+        with self._lock, self._torch.inference_mode():
+            generated = self.model.generate(
+                input_ids,
+                max_new_tokens=max_tokens,
+                do_sample=False,
+            )
+        response_ids = generated[0][input_ids.shape[-1]:]
+        text = self.tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1].strip()
+        return text
+
+    def count_tokens(self, text: str) -> int | None:
+        try:
+            return len(self.tokenizer.encode(text))
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+
 class ScriptedChatLLM:
     """Deterministic runtime for tests: replies come from a queue or a callable."""
 
@@ -96,7 +142,14 @@ class LLMState:
                 self.loaded_at = None
             return
         try:
-            llm: ChatLLM = ScriptedChatLLM() if backend_name == "fixture" else MLXChatLLM(model_name)
+            if backend_name == "fixture":
+                llm: ChatLLM = ScriptedChatLLM()
+            elif backend_name == "transformers":
+                llm = TransformersChatLLM(model_name)
+            elif backend_name == "mlx":
+                llm = MLXChatLLM(model_name)
+            else:
+                raise ValueError(f"unknown summary backend: {backend_name}")
             with self._lock:
                 self.llm = llm
                 self.status = "ready"

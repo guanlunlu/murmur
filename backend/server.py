@@ -13,29 +13,36 @@ if __package__ in (None, ""):  # allow `python backend/server.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.asr import BackendState
-from backend.config import DEFAULT_ASR_MODEL, DEFAULT_MEETING_DB, DEFAULT_SUMMARY_MODEL
+from backend.config import DEFAULT_MEETING_DB
+from backend.deployment import resolve_deployment
 from backend.http_app import create_server
 from backend.llm import LLMState
 from backend.meeting.service import MeetingService
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8787, type=int)
     parser.add_argument(
+        "--profile",
+        choices=("mac", "nvidia"),
+        default=os.environ.get("MURMUR_PROFILE"),
+        help="Local deployment profile (defaults to mac on macOS, nvidia elsewhere)",
+    )
+    parser.add_argument(
         "--backend",
         choices=("mlx", "transformers", "vllm", "fixture", "fixture-streaming"),
-        default=os.environ.get("MURMUR_ASR_BACKEND", "mlx"),
+        default=os.environ.get("MURMUR_ASR_BACKEND"),
     )
     parser.add_argument(
         "--summary-backend",
-        choices=("mlx", "fixture", "off"),
-        default=os.environ.get("MURMUR_SUMMARY_BACKEND", "mlx"),
+        choices=("mlx", "transformers", "fixture", "off"),
+        default=os.environ.get("MURMUR_SUMMARY_BACKEND"),
     )
     parser.add_argument(
         "--summary-model",
-        default=os.environ.get("MURMUR_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL),
+        default=os.environ.get("MURMUR_SUMMARY_MODEL"),
     )
     parser.add_argument(
         "--meeting-db",
@@ -44,7 +51,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("MURMUR_ASR_MODEL", DEFAULT_ASR_MODEL),
+        default=os.environ.get("MURMUR_ASR_MODEL"),
     )
     parser.add_argument(
         "--vllm-gpu-memory-utilization",
@@ -56,7 +63,27 @@ def main() -> None:
         default=int(os.environ.get("MURMUR_VLLM_MAX_MODEL_LEN", "4096")),
         type=int,
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        deployment = resolve_deployment(
+            profile=args.profile,
+            backend=args.backend,
+            model=args.model,
+            summary_backend=args.summary_backend,
+            summary_model=args.summary_model,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.profile = deployment.profile
+    args.backend = deployment.backend
+    args.model = deployment.model
+    args.summary_backend = deployment.summary_backend
+    args.summary_model = deployment.summary_model
+    return args
+
+
+def main() -> None:
+    args = parse_args()
 
     state = BackendState()
     summary_state = LLMState("summary")
@@ -84,7 +111,11 @@ def main() -> None:
     ).start()
     server = create_server(args.host, args.port, state, meeting_service=meetings)
     print(f"Murmur is available at http://{args.host}:{server.server_port}")
-    print("The ASR and summary models are loading in the background. Keep this window open.")
+    print(f"Profile: {args.profile}; ASR: {args.backend}; summary: {args.summary_backend}")
+    if args.summary_backend == "off":
+        print("The ASR model is loading in the background. Keep this window open.")
+    else:
+        print("The ASR and summary models are loading in the background. Keep this window open.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
