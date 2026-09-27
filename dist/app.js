@@ -346,13 +346,15 @@ class FastTranscriber {
     const audio = await this.decode(activeMedia, run.controller.signal);
     run.totalSeconds = audio.duration;
     const segmentSeconds = streamingEnabled ? MAX_STREAM_SECONDS : MAX_CHUNK_SECONDS;
-    for (let start = 0; start < audio.duration; start += segmentSeconds) {
+    for (let start = 0; start < audio.duration;) {
       this.assertActive(run);
-      const end = Math.min(audio.duration, start + segmentSeconds);
+      let end = Math.min(audio.duration, start + segmentSeconds);
+      if (audio.duration - end < MIN_CHUNK_SECONDS) end = audio.duration;
       if (streamingEnabled) await this.runStreamingSegment(run, audio, start, end);
       else await this.runBatchSegment(run, audio, start, end);
       run.completedSeconds = end;
       syncUI();
+      start = end;
     }
   }
 
@@ -385,7 +387,12 @@ class FastTranscriber {
   }
 
   async runBatchSegment(run, audio, start, end) {
-    const pcm = this.toPCM(audio, start, end);
+    let pcm = this.toPCM(audio, start, end);
+    if (pcm.length < TARGET_SAMPLE_RATE) {
+      const padded = new Float32Array(TARGET_SAMPLE_RATE);
+      padded.set(pcm);
+      pcm = padded;
+    }
     const response = await fetch("/api/transcribe", {
       method: "POST",
       signal: run.controller.signal,
@@ -606,8 +613,10 @@ function syncUI() {
   el.progressText.textContent = fastTranscription
     ? fastTranscription.cancelling ? "正在停止快速轉錄" : fastTranscription.totalSeconds ? `快速轉錄 ${Math.floor(ratio * 100)}%` : "正在讀取音訊"
     : !live && mediaUnavailable ? "尚未載入媒體" : pendingRequests ? "模型正在辨識" : latest ? `已辨識至 ${formatTime(latest.end)}` : isCapturing() ? "正在收音" : "尚未開始";
-  el.fastTranscribeButton.disabled = fastTranscription?.cancelling || serverStatus !== "ready" || captureMode !== "media" || mediaUnavailable;
-  el.fastTranscribeButton.textContent = fastTranscription ? fastTranscription.cancelling ? "停止中…" : "■ 停止快速轉錄" : "⚡ 快速轉錄";
+  if (el.fastTranscribeButton) {
+    el.fastTranscribeButton.disabled = fastTranscription?.cancelling || serverStatus !== "ready" || captureMode !== "media" || mediaUnavailable;
+    el.fastTranscribeButton.textContent = fastTranscription ? fastTranscription.cancelling ? "停止中…" : "■ 停止快速轉錄" : "⚡ 快速轉錄";
+  }
   const pending = meetingState ? meetingState.pending_segment_count : 0;
   el.summaryButton.disabled = rolloutPending || summaryStatus !== "ready" || !meetingId || !pending;
   el.summaryButton.textContent = rolloutPending ? "更新中…" : "立即整理";
@@ -1262,7 +1271,7 @@ function escapeHTML(text) { const node = document.createElement("span"); node.te
 function showToast(message) { el.toast.textContent = message; el.toast.classList.add("show"); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => el.toast.classList.remove("show"), 3000); }
 
 el.playButton.addEventListener("click", togglePlay);
-el.fastTranscribeButton.addEventListener("click", toggleFastTranscription);
+el.fastTranscribeButton?.addEventListener("click", toggleFastTranscription);
 el.timeline.addEventListener("input", () => {
   if (captureMode !== "media") return;
   capturer.discard();
